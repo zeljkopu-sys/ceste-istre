@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="hr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ceste Istre – test v7</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+html,body,#map{height:100%;margin:0;font-family:Arial,sans-serif}.top{position:absolute;z-index:1000;top:8px;left:8px;right:8px;max-width:600px;background:#fff;padding:10px;border-radius:12px;box-shadow:0 2px 12px #0003}.small{font-size:12px;color:#555}.actions{position:absolute;z-index:1000;bottom:12px;left:8px;right:8px;display:flex;gap:8px;justify-content:center}button{border:0;border-radius:12px;padding:13px 14px;background:#fff;font-weight:700;box-shadow:0 2px 10px #0003}.primary{background:#1565c0;color:#fff}.card{display:none;position:absolute;z-index:1100;left:8px;right:8px;bottom:72px;max-width:540px;margin:auto;background:#fff;border-radius:14px;padding:12px;box-shadow:0 2px 14px #0004}select,textarea,input{width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid #ccc;border-radius:8px}textarea{min-height:55px}.good{color:#1b5e20}.warn{color:#9a5b00}.bad{color:#b71c1c}
+</style></head><body>
+<div id="map"></div>
+<div class="top"><b>Ceste Istre – test v7</b><div class="small">Test početnih točaka dionica i GPS-a. DC66/001: 0+000 Pula (DC75/DC400), čvor 736. ŽC5119/0003: 0+000 Valtura (ŽC5120), čvor 1058. ŽC5134/0001: 0+000 A.G. Grada Pule, čvor 927.</div><div id="status" class="small">Učitavam ceste…</div></div>
+<div id="card" class="card"><b>Novi događaj</b><div id="result">Čekam lokaciju…</div><div id="quality" class="small"></div>
+<select id="kind"><option>Oštećenje kolnika</option><option>Prometna signalizacija</option><option>Zaštitna ograda</option><option>Odvodnja</option><option>Vegetacija</option><option>Ostalo</option></select>
+<textarea id="desc" placeholder="Kratak opis"></textarea><input id="photo" type="file" accept="image/*" capture="environment">
+<button style="width:100%;margin-top:7px" onclick="saveEvent()">SPREMI PROBNO</button><div id="saved" class="small good"></div></div>
+<div class="actions"><button onclick="getGPS()">◎ Moja lokacija</button><button class="primary" onclick="newEvent()">📷 Novi događaj</button></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script>
+const map=L.map('map').setView([44.88,13.94],12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
+const defs=[
+{name:'DC66',rel:1242264,color:'#d32f2f',section:'001',box:[44.84,13.82,44.92,14.02]},
+{name:'ŽC5119',rel:1345139,color:'#2e7d32',section:'0003',box:[44.805,13.91,44.925,14.02],official:12.069},
+{name:'ŽC5134',rel:1345141,color:'#2e7d32',section:'0001',box:[44.84,13.87,44.90,13.99],official:2.534}
+];
+let lines=[],pos=null,marker=null,selected=null,loaded=0;
+function inside(lat,lon,b){return lat>=b[0]&&lat<=b[2]&&lon>=b[1]&&lon<=b[3]}
+function draw(d,segments){
+ segments.forEach(seg=>{if(seg.length<2)return;lines.push({d,coords:seg});L.polyline(seg,{color:d.color,weight:6,opacity:.88,lineCap:'round',lineJoin:'round'}).bindTooltip(d.name,{sticky:true}).addTo(map)});
+ loaded++;status.textContent=loaded===3?'Ceste učitane – spremno za test.':`Učitano ${loaded}/3 cesta`;
+}
+async function load(d){
+ const key='ceste_v6_'+d.rel;
+ try{const c=localStorage.getItem(key);if(c){draw(d,JSON.parse(c));return}}catch(e){}
+ const r=await fetch(`https://api.openstreetmap.org/api/0.6/relation/${d.rel}/full`);
+ if(!r.ok)throw Error(r.status);
+ const xml=new DOMParser().parseFromString(await r.text(),'text/xml');
+ const nodes={};xml.querySelectorAll('node').forEach(n=>nodes[n.id]=[+n.getAttribute('lat'),+n.getAttribute('lon')]);
+ const memberWays=new Set([...xml.querySelectorAll('relation member[type="way"]')].map(m=>m.getAttribute('ref')));
+ const segments=[];
+ xml.querySelectorAll('way').forEach(w=>{
+   if(!memberWays.has(w.id))return;
+   let run=[]; const flush=()=>{if(run.length>=2)segments.push(run.slice());run=[]};
+   w.querySelectorAll('nd').forEach(nd=>{const p=nodes[nd.getAttribute('ref')];if(p&&inside(p[0],p[1],d.box))run.push(p);else flush()});flush();
+ });
+ if(!segments.length)throw Error('nema geometrije');
+ try{localStorage.setItem(key,JSON.stringify(segments))}catch(e){}
+ draw(d,segments);
+}
+Promise.all(defs.map(d=>load(d).catch(e=>{loaded++;status.textContent=`Ne mogu učitati ${d.name}. Pokušaj osvježiti stranicu.`})));
+
+function getGPS(){if(!navigator.geolocation){alert('GPS nije dostupan.');return}navigator.geolocation.getCurrentPosition(showGPS,e=>alert(e.message),{enableHighAccuracy:true,timeout:20000,maximumAge:0})}
+function showGPS(p){pos={lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy};if(marker)map.removeLayer(marker);marker=L.circleMarker([pos.lat,pos.lng],{radius:8,color:'#1565c0',fillOpacity:.9}).addTo(map);map.setView([pos.lat,pos.lng],17);analyze()}
+function analyze(){
+ if(!pos||!lines.length)return;const pt=turf.point([pos.lng,pos.lat]);let best=null;
+ lines.forEach(x=>{const ln=turf.lineString(x.coords.map(p=>[p[1],p[0]]));const s=turf.nearestPointOnLine(ln,pt,{units:'kilometers'});if(!best||s.properties.dist<best.s.properties.dist)best={x,ln,s}});
+ selected=best;const metres=Math.round(best.s.properties.dist*1000),d=best.x.d;
+ let km=best.s.properties.location||0;
+ const sta=(Math.floor(km)+'+'+String(Math.round((km-Math.floor(km))*1000)).padStart(3,'0'));
+ result.innerHTML=`<b>${d.name}</b> · dionica <b>${d.section}</b><br>GPS od osi ceste: <b>${metres} m</b><br>Stacionaža segmenta: <b>${sta}</b><br><span class="warn">V7 test: klik/GPS prepoznavanje je aktivno; puna službena stacionaža po cijeloj dionici slijedi nakon spajanja segmenata od 0+000.</span>`;
+ quality.className='small '+(pos.acc<=10?'good':pos.acc<=25?'warn':'bad');quality.textContent=`GPS preciznost ±${Math.round(pos.acc)} m`;
+}
+function newEvent(){card.style.display='block';saved.textContent='';if(pos)analyze();else getGPS();setTimeout(()=>photo.click(),500)}
+function saveEvent(){const a=JSON.parse(localStorage.getItem('events_v6')||'[]');a.push({time:new Date().toISOString(),gps:pos,road:selected?.x.d.name,section:selected?.x.d.section,type:kind.value,description:desc.value});localStorage.setItem('events_v6',JSON.stringify(a));saved.textContent='Probni događaj spremljen na ovom uređaju.'}
+map.on('click',e=>{pos={lat:e.latlng.lat,lng:e.latlng.lng,acc:0};if(marker)map.removeLayer(marker);marker=L.circleMarker(e.latlng,{radius:7,color:'#6a1b9a',fillOpacity:.9}).addTo(map);card.style.display='block';analyze()});
+
+map.on('click',e=>{
+ pos={lat:e.latlng.lat,lng:e.latlng.lng,acc:0};
+ if(marker)map.removeLayer(marker);
+ marker=L.circleMarker(e.latlng,{radius:7,color:'#6a1b9a',fillOpacity:.9}).addTo(map);
+ card.style.display='block';
+ analyze();
+});
+</script></body></html>
